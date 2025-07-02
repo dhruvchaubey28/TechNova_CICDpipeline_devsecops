@@ -1,9 +1,12 @@
-# --- .github/workflows/main.yml (Handles Terminated State) ---
+# --- .github/workflows/main.yml (With SonarQube Integration) ---
 
 name: TechNova CI/CD Pipeline
 
 on:
   push:
+    branches:
+      - main
+  pull_request:
     branches:
       - main
 
@@ -34,12 +37,9 @@ jobs:
       - name: Terraform Apply
         run: terraform apply -auto-approve
 
-      # --- THIS IS THE FIX ---
-      # This step now has logic to handle the 'terminated' state correctly.
       - name: Ensure Instance is Running and Get IP
         id: get_ip
         run: |
-          # Get the Instance ID using the tag.
           INSTANCE_ID=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=TechNova-Server-Terraform" "Name=instance-state-name,Values=running,stopped" --query "Reservations[0].Instances[0].InstanceId" --output text)
           
           if [ "$INSTANCE_ID" == "None" ]; then
@@ -50,11 +50,9 @@ jobs:
           
           echo "Found Instance ID: $INSTANCE_ID"
 
-          # Check the current state of the instance.
           INSTANCE_STATE=$(aws ec2 describe-instances --instance-ids $INSTANCE_ID --query "Reservations[0].Instances[0].State.Name" --output text)
           echo "Instance state is: $INSTANCE_STATE"
 
-          # If the instance is stopped, start it.
           if [ "$INSTANCE_STATE" == "stopped" ]; then
             echo "Instance is stopped. Sending start command..."
             aws ec2 start-instances --instance-ids $INSTANCE_ID
@@ -66,18 +64,70 @@ jobs:
             exit 1
           fi
           
-          # Now that we know it's running, get the public IP.
           ip_address=$(aws ec2 describe-instances --instance-ids $INSTANCE_ID --query "Reservations[0].Instances[0].PublicIpAddress" --output text)
           echo "Instance Public IP: $ip_address"
           echo "ip=${ip_address}" >> $GITHUB_OUTPUT
 
+  # NEW: SonarQube Code Quality Analysis Job
+  sonarqube:
+    name: 'SonarQube Code Analysis'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Disable shallow clone for better analysis
+
+      - name: Set up Python (if your project uses Python)
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies and run tests
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+          if [ -f pytest.ini ] || [ -d tests ]; then
+            pip install pytest pytest-cov
+            pytest --cov=. --cov-report=xml --cov-report=term-missing || true
+          fi
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Send SonarQube Results via Email
+        if: always()
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 587
+          username: ${{ secrets.GMAIL_USERNAME }}
+          password: ${{ secrets.GMAIL_APP_PASSWORD }}
+          subject: "TechNova SonarQube Analysis Results"
+          body: |
+            SonarQube analysis completed for commit ${{ github.sha }}.
+            
+            View detailed results at: https://sonarcloud.io/project/overview?id=your-project-key
+            
+            Branch: ${{ github.ref_name }}
+            Commit: ${{ github.sha }}
+            Author: ${{ github.actor }}
+          to: ${{ secrets.NOTIFICATION_EMAIL }}
+          from: TechNova CI/CD Pipeline
+
   deploy:
     name: 'Build and Deploy Application'
     runs-on: ubuntu-latest
-    needs: provision
+    needs: [provision, sonarqube]  # Now depends on both provision and sonarqube
+    # Add this condition to only deploy if SonarQube passes
+    if: needs.sonarqube.result == 'success'
 
     steps:
-      # ... (The rest of your deploy job remains exactly the same) ...
       - name: Checkout code
         uses: actions/checkout@v3
 
@@ -101,7 +151,6 @@ jobs:
           username: ubuntu
           key: ${{ secrets.EC2_KEY }}
           script: |
-            # Wait for the Docker daemon itself to be responsive
             echo "Connecting to server... Waiting for Docker daemon to start..."
             for i in {1..30}; do
               if sudo docker info &> /dev/null; then
@@ -117,10 +166,8 @@ jobs:
               exit 1
             fi
             
-            # Set permissions on the docker socket
             sudo chmod 666 /var/run/docker.sock
 
-            # Run the deployment commands
             docker pull ${{ secrets.DOCKERHUB_USERNAME }}/technova-app:latest
             docker stop technova-app || true
             docker rm technova-app || true
