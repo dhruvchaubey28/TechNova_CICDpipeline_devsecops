@@ -109,7 +109,7 @@ jobs:
           body: |
             SonarQube analysis completed for commit ${{ github.sha }}.
             
-            View detailed results at: https://sonarcloud.io/project/overview?id=your-project-key
+            View detailed results at: https://sonarcloud.io/project/overview?id=dhruvchaubey28_TechNova_CICDpipeline_devsecops
             
             Branch: ${{ github.ref_name }}
             Commit: ${{ github.sha }}
