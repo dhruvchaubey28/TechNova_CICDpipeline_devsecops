@@ -749,9 +749,4 @@ jobs:
             2. Download the 'zap-reports' artifact
             3. Open the HTML report for detailed vulnerability analysis
             
-            Branch: ${{ github.ref_name }}
-            Commit: ${{ github.sha }}
-            Author: ${{ github.actor }}
-            Workflow: ${{ github.workflow }}
-          to: ${{ secrets.NOTIFICATION_EMAIL }}
-          from: TechNova CI/CD Pipeline
+
